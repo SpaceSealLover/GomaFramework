@@ -3,6 +3,7 @@
 //
 #include <iostream>
 #include <string>
+#include <vector>
 #include <SDL3/SDL.h>
 #include <SDL3_image/SDL_image.h>
 #include <SDL3_ttf/SDL_ttf.h>
@@ -11,17 +12,22 @@
 
 namespace Engine {
     namespace {;
-        Uint64 PreviousTime;
-        SDL_Event Event;
+        Uint64 PreviousTime; //for delta time calculation
+
         bool PreviousKeyState[SDL_SCANCODE_COUNT];
+        Uint32 PreviousMouseState = 0;
+        Uint32 CurrentMouseState = 0;
+
+        SDL_Window* Window = nullptr;
+        SDL_Renderer* Renderer = nullptr;
+        SDL_Event Event;
+        TTF_TextEngine* TextEngine = nullptr;
+
+        MIX_Mixer* Mixer = nullptr;
+        MIX_Track* BGMTrack = nullptr;
+        std::vector<MIX_Track*> SFXPool;
     }
 
-    static SDL_Window* Window = nullptr;
-    static SDL_Renderer* Renderer = nullptr;
-    static TTF_TextEngine* TextEngine = nullptr;
-    static MIX_Mixer* Mixer = nullptr;
-
-    static MIX_Track* BGMTrack = nullptr;
 
     bool Init(const int width, const int height, const std::string& title) {
         //set Initial time for delta time calculation
@@ -30,7 +36,7 @@ namespace Engine {
         //Initialize window and shit
         bool success = true;
 
-        if (!SDL_Init(SDL_INIT_VIDEO)) {
+        if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO)) {
             std::cout << "SDL failed to initialize: " << SDL_GetError() << std::endl;
             success = false;
         }
@@ -46,9 +52,23 @@ namespace Engine {
             std::cout << "MIX failed to initialize: " << SDL_GetError() << std::endl;
         }
 
+        //Create Mixer
         Mixer = MIX_CreateMixerDevice(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, nullptr);
+        if (!Mixer) {
+            std::cout << "Failed to create mixer device: " << SDL_GetError() << std::endl;
+        } else {
+            // Create the dedicated BGM track
+            BGMTrack = MIX_CreateTrack(Mixer);
 
-
+            // Pre-allocate an SFX pool of 16 tracks
+            for (int i = 0; i < 16; ++i) {
+                if (MIX_Track* sfxTrack = MIX_CreateTrack(Mixer)) {
+                    SFXPool.push_back(sfxTrack);
+                } else {
+                    std::cout << "Failed to create track: " << SDL_GetError() << std::endl;
+                }
+            }
+        }
 
         //Initialize text renderer
         if (!TTF_Init()) {
@@ -62,6 +82,14 @@ namespace Engine {
     };
 
     void Quit() {
+        if (BGMTrack) MIX_DestroyTrack(BGMTrack);
+        for (auto* track : SFXPool) {
+            MIX_DestroyTrack(track);
+        }
+        SFXPool.clear();
+        if (Mixer) MIX_DestroyMixer(Mixer);
+        if (TextEngine) TTF_DestroyRendererTextEngine(TextEngine);
+
         SDL_DestroyWindow(Window);
         SDL_DestroyRenderer(Renderer);
         TTF_Quit();
@@ -78,13 +106,22 @@ namespace Engine {
     }
 
     void ProcessInput() {
+        //Get keyboard state
         const bool *KeyState = SDL_GetKeyboardState(nullptr);
         for (int i = 0; i < SDL_SCANCODE_COUNT; ++i) {
             PreviousKeyState[i] = KeyState[i];
         }
 
+        //Update mouse state
+        if (SDL_HasMouse()) {
+            PreviousMouseState = CurrentMouseState;
+            CurrentMouseState = SDL_GetMouseState(nullptr, nullptr);
+        }
+
+        //I don't know
         SDL_PumpEvents();
 
+        //Check if the application should end
         while (SDL_PollEvent(&Event)) {
             if (Event.type == SDL_EVENT_QUIT) {
                 std::cout << "Quitting..." << std::endl;
@@ -93,7 +130,7 @@ namespace Engine {
         }
     }
 
-    bool IsKeyDown(const SDL_Scancode scancode) {
+    bool IsKeyHeld(const SDL_Scancode scancode) {
         const bool *KeyState = SDL_GetKeyboardState(nullptr);
         bool isDown = false;
 
@@ -104,11 +141,23 @@ namespace Engine {
         return isDown;
     }
 
-    bool IsKeyReleased(const SDL_Scancode scancode) {
+    bool IsKeyPressed(const SDL_Scancode scancode) {
         const bool *KeyState = SDL_GetKeyboardState(nullptr);
 
         return !KeyState[scancode] && PreviousKeyState[scancode];
     }
+
+    bool IsMouseButtonDown(const int button) {
+        const Uint32 mask = SDL_BUTTON_MASK(button);
+        return (CurrentMouseState & mask) != 0;
+    }
+
+    bool IsMouseButtonReleased(const int button) {
+        const Uint32 mask = SDL_BUTTON_MASK(button);
+        return !(CurrentMouseState & mask) && (PreviousMouseState & mask);
+    }
+
+    //Asset Loading
 
     SDL_Texture* LoadImage(const std::string& fileName) {
         SDL_Texture* texture = IMG_LoadTexture(Renderer, fileName.c_str());
@@ -158,6 +207,22 @@ namespace Engine {
         return audio;
     }
 
+    //Asset unloading
+
+    void UnloadImage(SDL_Texture* texture) {
+        if (texture) SDL_DestroyTexture(texture);
+    }
+
+    void UnloadFont(TTF_Font* font) {
+        if (font) TTF_CloseFont(font);
+    }
+
+    void UnloadAudio(MIX_Audio* audio) {
+        if (audio) MIX_DestroyAudio(audio);
+    }
+
+    //Asset rendering
+
     void DrawImage(SDL_Texture& Texture, const float x, const float y) {
         float width = 0.0f;
         float height = 0.0f;
@@ -182,11 +247,6 @@ namespace Engine {
         }
     }
 
-    void PlaySFX(MIX_Audio& audio) {
-
-    }
-
-
     void StartRender() {
         SDL_SetRenderDrawColor(Renderer, 0, 0, 0, 255);
         SDL_RenderClear(Renderer);
@@ -196,4 +256,39 @@ namespace Engine {
         SDL_RenderPresent(Renderer);
     }
 
+    //Audio Playback
+
+    void PlayBGM(MIX_Audio* audio, const bool loop) {
+        if (!BGMTrack || !audio) return;
+        MIX_SetTrackAudio(BGMTrack, audio);
+
+        // Create options for infinite looping (-1)
+        const SDL_PropertiesID properties = SDL_CreateProperties();
+        SDL_SetNumberProperty(properties, MIX_PROP_PLAY_LOOPS_NUMBER, loop == true ? -1 : 0);
+
+        MIX_PlayTrack(BGMTrack, properties);
+        SDL_DestroyProperties(properties);
+    }
+
+    void PlaySFX(MIX_Audio* audio) {
+        if (!audio || SFXPool.empty()) return;
+
+        MIX_Track* targetTrack = nullptr;
+
+        // Find an idle track in the pool
+        for (auto* track : SFXPool) {
+            if (!MIX_TrackPlaying(track)) {
+                targetTrack = track;
+                break;
+            }
+        }
+
+        // Fallback: steal the first track if all are busy
+        if (!targetTrack) {
+            targetTrack = SFXPool[0];
+        }
+
+        MIX_SetTrackAudio(targetTrack, audio);
+        MIX_PlayTrack(targetTrack, 0);
+    }
 }
