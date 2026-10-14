@@ -46,9 +46,14 @@ namespace Engine {
     void UnloadAudio(MIX_Audio* audio);
     void UnloadFont(TTF_Font* font);
 
+    //utils
+
+    std::string WrapText(const std::string& text, TTF_Font* font, int maxWidth);
+
     //asset rendering and audio playback
     void DrawImage(SDL_Texture& Texture, float x, float y);
     void DrawText(const std::string& text, float x, float y, TTF_Font* font);
+    void DrawText(const std::string& text, float x, float y, TTF_Font* font, size_t len); //Cuts off text
     void PlaySFX(MIX_Audio* audio);
     void PlayBGM(MIX_Audio* audio, bool loop);
 }
