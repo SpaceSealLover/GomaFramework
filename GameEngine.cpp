@@ -28,6 +28,24 @@ namespace Engine {
         std::vector<MIX_Track*> SFXPool;
     }
 
+    namespace {
+        size_t GetUTF8ByteLength(const std::string& text, const size_t maxChars) {
+            if (maxChars == 0) return 0;
+
+            const char* p = text.c_str();
+            size_t remainingBytes = text.size();
+            size_t chars = 0;
+
+            while (chars < maxChars && remainingBytes > 0) {
+                Uint32 codepoint = SDL_StepUTF8(&p, &remainingBytes);
+                if (codepoint == 0) break;               // end of string
+                // SDL_StepUTF8 already advanced p and reduced remainingBytes
+                ++chars;
+            }
+
+            return text.size() - remainingBytes;
+        }
+    }
 
     bool Init(const int width, const int height, const std::string& title) {
         //set Initial time for delta time calculation
@@ -247,6 +265,18 @@ namespace Engine {
         }
     }
 
+    //Strings with a character limit
+    void DrawText(const std::string& text, const float x, const float y, TTF_Font* font, const size_t len) {
+        if (!TextEngine || !font) return;
+
+        const size_t textLen = (len == 0) ? 0 : GetUTF8ByteLength(text, len);
+
+        if (TTF_Text *TextToDraw = TTF_CreateText(TextEngine, font, text.c_str(), textLen)) {
+            TTF_DrawRendererText(TextToDraw, x, y);
+            TTF_DestroyText(TextToDraw); // Clean up the temporary layout object
+        }
+    }
+
     void StartRender() {
         SDL_SetRenderDrawColor(Renderer, 0, 0, 0, 255);
         SDL_RenderClear(Renderer);
@@ -291,4 +321,59 @@ namespace Engine {
         MIX_SetTrackAudio(targetTrack, audio);
         MIX_PlayTrack(targetTrack, 0);
     }
+
+    //utils
+
+    std::string WrapText(const std::string& text, TTF_Font* font, int maxWidth)
+    {
+        std::string result;
+        std::string line;
+
+        size_t i = 0;
+        while (i < text.size()) {
+            // Find end of next word (or end of string)
+            size_t wordStart = i;
+            while (i < text.size() && text[i] != ' ' && text[i] != '\n') {
+                // Advance one UTF-8 character
+                const char* p = text.c_str() + i;
+                size_t rem = text.size() - i;
+                SDL_StepUTF8(&p, &rem);
+                i = p - text.c_str();
+            }
+
+            std::string word = text.substr(wordStart, i - wordStart);
+
+            // Measure current line + word
+            std::string test = line.empty() ? word : line + " " + word;
+            int w = 0, h = 0;
+            TTF_GetStringSize(font, test.c_str(), 0, &w, &h);
+
+            if (w > maxWidth && !line.empty()) {
+                // Need to wrap
+                if (!result.empty()) result += '\n';
+                result += line;
+                line = word;
+            } else {
+                if (!line.empty()) line += ' ';
+                line += word;
+            }
+
+            // Skip the space
+            if (i < text.size() && text[i] == ' ') ++i;
+            if (i < text.size() && text[i] == '\n') {
+                if (!result.empty()) result += '\n';
+                result += line;
+                line.clear();
+                ++i;
+            }
+        }
+
+        if (!line.empty()) {
+            if (!result.empty()) result += '\n';
+            result += line;
+        }
+
+        return result;
+    }
+
 }
